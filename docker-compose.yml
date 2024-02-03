@@ -1,0 +1,75 @@
+version: '3'
+
+services:
+
+  traefik:
+    image: traefik:v2.10
+    command:
+      - "--log.level=DEBUG"
+      - "--api.insecure=true"
+      - "--entrypoints.web.address=:8088"
+      - "--entryPoints.web.forwardedHeaders.insecure"
+    # docker swarm mode (1.12+)
+      #- --providers.docker.endpoint=tcp://127.0.0.1:2377
+      #- --providers.docker.swarmMode=true
+     # regular compose
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+    ports:
+      - "8088:8088"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    labels:
+      #### set core configs
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik.rule=(PathPrefix(`/traefik`) || HeadersRegexp(`Referer`, `.*/traefik/.*`))"
+      #### set traefik dashboard
+      - "traefik.http.routers.traefik.service=api@internal"
+      #### set middlewares: stripprefix for dashboard
+      - "traefik.http.routers.traefik.middlewares=mystrip"
+      - "traefik.http.middlewares.mystrip.stripprefix.prefixes=/traefik"
+    restart: unless-stopped
+
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:latest
+    environment:
+      - OAUTH2_PROXY_PROVIDER=oidc
+      - OAUTH2_PROXY_OIDC_ISSUER_URL=https://keycloak/realms/RealmName
+      - OAUTH2_PROXY_CLIENT_ID=cleint-id
+      - OAUTH2_PROXY_CLIENT_SECRET="set-client-secret"
+      - OAUTH2_PROXY_COOKIE_SECRET="set-cookie-secret"
+      - OAUTH2_PROXY_EMAIL_DOMAINS=*
+      - OAUTH2_PROXY_REVERSE_PROXY=true
+      - OAUTH2_PROXY_REDIRECT_URL=http://localhost:8088/oauth2/callback
+      - OAUTH2_PROXY_COOKIE_SECURE=false
+      - OAUTH2_PROXY_INSECURE_OIDC_ALLOW_UNVERIFIED_EMAIL=true # don't fail if an email address in an id_token is not verified
+      - OAUTH2_PROXY_UPSTREAM=http://echo-server:80
+      - OAUTH2_PROXY_HTTP_ADDRESS=http://0.0.0.0:4180
+      - OAUTH2_PROXY_CODE_CHALLENGE_METHOD=S256
+     # - OAUTH2_PROXY_ALLOWED_ROLES='superadmin'
+      - OAUTH2_PROXY_SET_AUTHORIZATION_HEADER=true
+      - OAUTH2_PROXY_SET_XAUTHREQUEST=true
+      # For traefik
+      # (WARNING: this may contain sensitive information - do not use in production)
+      - OUATH2_PROXY_SHOW_DEBUG_ON_ERROR=true
+    command:
+      - --http-address=0.0.0.0:4180
+      - --upstream=http://echo-server:80
+      # - --skip-provider-button=true
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.services.oauth2-proxy.loadbalancer.server.port=4180"
+      - "traefik.http.routers.oauth2-proxy.entrypoints=web"
+      - "traefik.http.middlewares.oauth2-proxy.forwardauth.address=http://oauth2-proxy:4180"
+      - "traefik.http.middlewares.oauth2-proxy.forwardauth.authResponseHeaders=Authorization"
+      - "traefik.http.middlewares.oauth2-proxy.forwardauth.trustForwardHeader=true"
+      - "traefik.http.routers.oauth2-proxy.rule=PathPrefix(`/oauth2`)"
+
+  echo-server:
+    image: ealen/echo-server
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.echo-server.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.echo-server.entrypoints=web"
+      - "traefik.http.routers.echo-server.middlewares=oauth2-proxy@docker"
+      - "traefik.http.services.echo-server.loadbalancer.server.port=80"
